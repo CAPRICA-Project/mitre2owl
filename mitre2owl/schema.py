@@ -152,9 +152,10 @@ class Element:
     """
     xs:element parser
     :param node: The xs:element to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         self.annotation = parse_annotation(node)
         self.name = node.get('name')
         self.min = node.get('minOccurs')
@@ -163,9 +164,9 @@ class Element:
         if self.type is None: # if the `type' attribute is not set, explore the children
             complex_types = xpath(node, XS/COMPLEX_TYPE)
             if complex_types:
-                self.type = ComplexType(complex_types[0], ns)
+                self.type = ComplexType(complex_types[0], schema, ns)
             else:
-                self.type = SimpleType(xpath(node, XS/SIMPLE_TYPE)[0], ns)
+                self.type = SimpleType(xpath(node, XS/SIMPLE_TYPE)[0], schema, ns)
         self.names = {add_namespace(self.name, ns[0]): self}
 
     def parse(self, node, schema):
@@ -192,14 +193,15 @@ class SimpleType:
     """
     [I] xs:simpleType parser
     :param node: The xs:simpleType to parse
+    :param schema: The schema
     :param ns: The namespace map
     :param name: The optional type name
     """
-    def __init__(self, node, ns, name=None):
+    def __init__(self, node, schema, ns, name=None):
         self.name = node.get('name') or name
         self.annotation = parse_annotation(node)
         # For convenience, we ignore lists and unions
-        self.restriction = Restriction(xpath(node, XS/RESTRICTION)[0], ns, self.name)
+        self.restriction = Restriction(xpath(node, XS/RESTRICTION)[0], schema, ns, self.name)
         self.alone = False # look away
 
     def parse(self, node, schema):
@@ -215,17 +217,19 @@ class Restriction:
     """
     [I] xs:restriction parser
     :param node: The xs:restriction to parse
+    :param schema: The schema
     :param ns: The namespace map
     :param name: The type name
     """
-    def __init__(self, node, ns, name):
+    def __init__(self, node, schema, ns, name):
         self.base = parse_type(node.get('base'), ns)
         self.enumerations = {}
         self.name = name
         for child in xpath(node, XS/ENUMERATION):
             # For convenience, we ignore non-enumeration restrictions
-            item = Enumeration(child, ns)
+            item = Enumeration(child, schema, ns)
             self.enumerations[item.value] = item
+            schema.enums.append(Individual(item.value, type_=name))
 
     def parse(self, node, schema):
         """
@@ -240,8 +244,9 @@ class Enumeration:
     """
     [I] xs:enumeration parser
     :param node: The xs:restriction to parse
+    :param schema: The schema
     """
-    def __init__(self, node, _):
+    def __init__(self, node, schema, _):
         self.value = node.get('value')
         self.annotation = parse_annotation(node)
 
@@ -250,27 +255,28 @@ class Enumeration:
         Enumeration parser
         :param name: The enumeration name
         """
-        return Individual(self.value, type_=name)
+        return Individual(self.value, type_=name, ignore=True)
 
 
 class ComplexType:
     """
     [I] xs:complexType parser
     :param node: The xs:complexType to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         # Here we are VERY lenient with the standard, to simplify parsing
         self.name = node.get('name')
         self.annotation = parse_annotation(node)
-        self.attributes = [Attribute(n, ns) for n in xpath(node, XS/ATTRIBUTE)]
+        self.attributes = [Attribute(n, schema, ns) for n in xpath(node, XS/ATTRIBUTE)]
         self.type = None
         if sequences := xpath(node, XS/SEQUENCE):
-            self.type = Sequence(sequences[0], ns)
+            self.type = Sequence(sequences[0], schema, ns)
         elif extensions := xpath(node, (XS/(SIMPLE_CONTENT|COMPLEX_CONTENT)) / (XS/EXTENSION)):
-            self.type = Extension(extensions[0], ns)
+            self.type = Extension(extensions[0], schema, ns)
         elif choices := xpath(node, XS/CHOICE):
-            self.type = Choice(choices[0], ns)
+            self.type = Choice(choices[0], schema, ns)
         if self.type is None:
             self.alone = len(self.attributes) == 1
         else:
@@ -298,14 +304,15 @@ class Attribute:
     """
     [A] xs:attribute parser
     :param node: The xs:attribute to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         self.name = node.get('name')
         self.required = node.get('use') == 'required'
         self.type = parse_type(node.get('type'), ns)
         if self.type is None: # if the `type' attribute is not set, explore the children
-            self.type = SimpleType(xpath(node, XS/SIMPLE_TYPE)[0], ns, self.name)
+            self.type = SimpleType(xpath(node, XS/SIMPLE_TYPE)[0], schema, ns, self.name)
 
     def parse(self, value, schema):
         """
@@ -320,12 +327,13 @@ class Sequence:
     """
     [A] xs:sequence parser
     :param node: The xs:sequence to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         # For convenience, we ignore groups and subsequences
-        elements = [Element(n, ns) for n in xpath(node, XS/ELEMENT)]
-        choices = [Choice(n, ns) for n in xpath(node, XS/CHOICE)]
+        elements = [Element(n, schema, ns) for n in xpath(node, XS/ELEMENT)]
+        choices = [Choice(n, schema, ns) for n in xpath(node, XS/CHOICE)]
         anies = [Any(n) for n in xpath(node, XS/ANY)]
         assert len(anies) <= 1
         if anies:
@@ -366,11 +374,12 @@ class Extension:
     """
     [A] xs:extension parser
     :param node: The xs:extension to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         self.base = parse_type(node.get('base'), ns)
-        self.attributes = [Attribute(n, ns) for n in xpath(node, XS/ATTRIBUTE)]
+        self.attributes = [Attribute(n, schema, ns) for n in xpath(node, XS/ATTRIBUTE)]
         # For convenience, we only consider attribute extensions
         self.alone = False
 
@@ -401,12 +410,13 @@ class Choice:
     """
     [A] xs:choice parser
     :param node: The xs:choice to parse
+    :param schema: The schema
     :param ns: The namespace map
     """
-    def __init__(self, node, ns):
+    def __init__(self, node, schema, ns):
         # For convenience, we ignore groups, subchoices and anies
-        sequences = [Sequence(n, ns) for n in xpath(node, XS/SEQUENCE)]
-        elements = [Element(n, ns) for n in xpath(node, XS/ELEMENT)]
+        sequences = [Sequence(n, schema, ns) for n in xpath(node, XS/SEQUENCE)]
+        elements = [Element(n, schema, ns) for n in xpath(node, XS/ELEMENT)]
         self.children = sequences + elements
         self.names = {}
         for choice in self.children:
@@ -466,16 +476,17 @@ class Schema:
         schema = etree.parse(file).xpath('.')[0]
         self.nsmap = schema.nsmap
         self.namespace = schema.get('targetNamespace')
+        self.enums = []
         for node in xpath(schema, XS/(ELEMENT|COMPLEX_TYPE|SIMPLE_TYPE)):
             if XS/ELEMENT == node.tag:
-                element = Element(node, ns=(self.namespace, self.nsmap))
+                element = Element(node, self, ns=(self.namespace, self.nsmap))
                 self.elements[add_namespace(element.name, self.namespace)] = element
             else:
                 if XS/COMPLEX_TYPE == node.tag:
                     Type = ComplexType
                 else:
                     Type = SimpleType
-                type_ = Type(node, ns=(self.namespace, self.nsmap))
+                type_ = Type(node, self, ns=(self.namespace, self.nsmap))
                 self.types[f'{{{self.namespace}}}{type_.name}'] = type_
         self.raw_datatypes = raw or [XHTML]
         self.name_overrides = {}

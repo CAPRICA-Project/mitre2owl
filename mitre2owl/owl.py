@@ -11,7 +11,9 @@ REPLACEMENTS = {'#': 'Sharp', '+': 'Plus', '.': 'Dot', '\\': 'Backslash', '&': '
                 '/': 'Or', ':': '', '*': 'Wildcard', '=': 'Equal', '"': '', '%': 'Percent',
                 '<': 'Below', '>': 'Above', '^': ''}
 
-ATTRIBUTES = ['Name', 'name', 'Title', 'Term', 'Entry_Name']
+ID_ATTRIBUTES = []
+NAME_ATTRIBUTES = []
+TYPE_MAP = {}
 
 
 class ClassAtomException(Exception):
@@ -138,29 +140,38 @@ class Individual:
     :param assertions: The assertions whose the individual is the subject
     :param type_: The XML type
     """
-    def __init__(self, name, /, assertions=None, type_=None):
-        names = {attribute: None for attribute in ATTRIBUTES}
+    def __init__(self, name, /, assertions=None, type_=None, ignore=False):
+        names = {attribute: None for attribute in NAME_ATTRIBUTES}
         self.assertions = assertions or []
+        self.id = None
         for assertion in self.assertions:
-            for attribute in ATTRIBUTES:
+            if assertion.attribute in ID_ATTRIBUTES:
+                self.id = assertion.value.value
+                continue
+            for attribute in NAME_ATTRIBUTES:
                 if assertion.attribute == attribute:
                     names[attribute] = assertion.value
-        self.name = make_name([names[attribute] for attribute in ATTRIBUTES], name)
+        self.name = make_name([names[attribute] for attribute in NAME_ATTRIBUTES], name)
         self.type = type_
         self.slug_base = self.name
+        self.ignore = ignore
 
     def slug(self):
         """Return the Individual’s slug"""
+        if self.id is not None:
+            type_ = TYPE_MAP.get(self.type, self.type)
+            return f'{type_}-{self.id}'
         return slugify((self.type or '')+self.slug_base, individual=True)
 
     def emit_owl(self):
         """Give the XML/OWL representation of the individual"""
+        if self.ignore:
+            return ''
         slug = self.slug()
         owl = f'''
     <Declaration>
         <NamedIndividual IRI="#{slug}"/>
     </Declaration>
-
     <AnnotationAssertion>
         <AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#label"/>
         <IRI>#{slug}</IRI>
@@ -271,11 +282,13 @@ class Rule:
 class Ontology:
     """
     This class represents an OWL ontology
+    :param prelude: The ontology prelude
     :param entries: The ontology entries (explored recursively)
     :param rules: The ontology rules
     """
-    def __init__(self, kind, entries, rules=None):
+    def __init__(self, kind, prelude, entries, rules=None):
         self.kind = kind
+        self.prelude = prelude
         self.entries = entries if isinstance(entries, list) else [entries]
         self.rules = rules or []
 
@@ -295,6 +308,7 @@ class Ontology:
     <Prefix name="xml" IRI="http://www.w3.org/XML/1998/namespace"/>
     <Prefix name="xsd" IRI="http://www.w3.org/2001/XMLSchema#"/>
     <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    {''.join(entry.emit_owl() for entry in self.prelude)}
     {''.join(entry.value.emit_owl() for entry in self.entries)}
     {''.join(rule.emit_owl() for rule in self.rules)}
 </Ontology>'''

@@ -6,6 +6,7 @@ from io import BytesIO
 from urllib.request import urlopen
 from zipfile import ZipFile
 
+from . import owl
 from .schema import Schema
 from .owl import Rule, Class, ObjectProperty as OP, DataProperty as DP, Ontology
 
@@ -17,6 +18,7 @@ SCHEMAS = {'CAPEC': 'https://capec.mitre.org/data/xsd/ap_schema_latest.xsd',
 DATA = {'CAPEC': 'https://capec.mitre.org/data/xml/capec_latest.xml',
         'CVE': 'https://cve.mitre.org/data/downloads/allitems.xml',
         'CWE': 'https://cwe.mitre.org/data/xml/cwec_latest.xml.zip'}
+TYPE_MAP = {'Attack_Pattern': 'CAPEC', 'Vulnerability': 'CVE', 'Weakness': 'CWE'}
 
 
 def join_natural(delimiter, l, last='and'):
@@ -72,10 +74,9 @@ def get_rules(kind):
                           OP('w hasCVE v'))]
         case 'CVE':
             return [Rule('hasCWE',
-                         [Class('v', 'Vulnerability'), DP('v hasName id'),
+                         [Class('v', 'Vulnerability'),
                           Class('w', 'https://owl.caprica-project.org/cwe#Weakness'),
-                          OP('w https://owl.caprica-project.org/cwe#hasObservedExample e'),
-                          DP('e https://owl.caprica-project.org/cwe#hasReference id')],
+                          OP('w https://owl.caprica-project.org/cwe#hasCVE v')],
                          OP('v hasCWE w'))]
         case _:
             return []
@@ -130,10 +131,16 @@ if __name__ == '__main__':
     if len(kinds) == 0:
         parser.error('At least one of CAPEC, CVE or CWE must be processed')
 
+    owl.ID_ATTRIBUTES = ['ID', 'seq']
+    owl.NAME_ATTRIBUTES = ['Name', 'name', 'Title', 'Term', 'Entry_Name']
+    owl.TYPE_MAP = TYPE_MAP
+
     for kind in kinds:
         kind_lower = kind.lower()
         schema = fetch(getattr(args, f'{kind_lower}_schema') or SCHEMAS[kind])
         data = fetch(getattr(args, f'{kind_lower}_data') or DATA[kind])
+
         with schema, data, open(f'{kind}.owx', 'w', encoding='utf8') as owx:
-            owx.write(Ontology(kind_lower, patch(Schema(schema), kind).parse(data),
+            patched = patch(Schema(schema), kind)
+            owx.write(Ontology(kind_lower, patched.enums, patched.parse(data),
                                rules=get_rules(kind)).emit_owl())
