@@ -8,7 +8,7 @@ from zipfile import ZipFile
 
 from . import owl
 from .schema import Schema
-from .owl import Rule, Class, ObjectProperty as OP, DataProperty as DP, Ontology
+from .owl import Rule, ClassAtom as CA, ObjectPropertyAtom as OPA, DataPropertyAtom as DPA, Ontology
 
 
 KINDS = ['CAPEC', 'CVE', 'CWE']
@@ -37,8 +37,12 @@ def patch(schema, kind):
         case 'CWE':
             schema.types[f'{{{schema.namespace}}}MemberType'].alone = True
             schema.types[f'{{{schema.namespace}}}RelationshipsType'].alone = True
+            schema.types[f'{{{schema.namespace}}}RelationshipsType']\
+                  .force_pushed_annotations_to_relations = True
         case 'CAPEC':
             schema.types[f'{{{schema.namespace}}}RelationshipsType'].alone = True
+            schema.types[f'{{{schema.namespace}}}RelationshipsType']\
+                  .force_pushed_annotations_to_relations = True
             (schema.types[f'{{{schema.namespace}}}ExecutionFlowType'].type
                    .names[f'{{{schema.namespace}}}Attack_Step'].type.type
                    .names[f'{{{schema.namespace}}}Technique'].type.alone) = True
@@ -55,41 +59,42 @@ def get_rules(kind):
         case 'CAPEC':
             type_ = 'AttackPattern'
             rules = [Rule('hasCWE',
-                          [Class('a', 'AttackPattern'), DP('a hasID id'),
-                           Class('w', 'https://owl.caprica-project.org/cwe#Weakness'),
-                           DP('w https://owl.caprica-project.org/cwe#hasCAPECID id')],
-                          OP('a hasCWE w'))]
+                          [CA('a', 'AttackPattern'), DPA('a hasID id'),
+                           CA('w', 'https://owl.caprica-project.org/cwe#Weakness'),
+                           DPA('w https://owl.caprica-project.org/cwe#hasCAPECID id')],
+                          OPA('a hasCWE w'))]
         case 'CWE':
             type_ = 'Weakness'
             rules = [Rule('hasCAPEC',
-                          [Class('w', 'Weakness'), DP('w hasCAPECID id'),
-                           Class('a', 'https://owl.caprica-project.org/capec#AttackPattern'),
-                           DP('a https://owl.caprica-project.org/capec#hasID id')],
-                          OP('w hasCAPEC a')),
+                          [CA('w', 'Weakness'), DPA('w hasCAPECID id'),
+                           CA('a', 'https://owl.caprica-project.org/capec#AttackPattern'),
+                           DPA('a https://owl.caprica-project.org/capec#hasID id')],
+                          OPA('w hasCAPEC a')),
                      Rule('hasCVE',
-                          [Class('w', 'Weakness'), OP('w hasObservedExample e'),
-                           DP('e hasReference id'),
-                           Class('v', 'https://owl.caprica-project.org/cve#Vulnerability'),
-                           DP('v https://owl.caprica-project.org/cve#hasName id')],
-                          OP('w hasCVE v'))]
+                          [CA('w', 'Weakness'), OPA('w hasObservedExample e'),
+                           DPA('e hasReference id'),
+                           CA('v', 'https://owl.caprica-project.org/cve#Vulnerability'),
+                           DPA('v https://owl.caprica-project.org/cve#hasName id')],
+                          OPA('w hasCVE v'))]
         case 'CVE':
             return [Rule('hasCWE',
-                         [Class('v', 'Vulnerability'),
-                          Class('w', 'https://owl.caprica-project.org/cwe#Weakness'),
-                          OP('w https://owl.caprica-project.org/cwe#hasCVE v')],
-                         OP('v hasCWE w'))]
+                         [CA('v', 'Vulnerability'),
+                          CA('w', 'https://owl.caprica-project.org/cwe#Weakness'),
+                          OPA('w https://owl.caprica-project.org/cwe#hasCVE v')],
+                         OPA('v hasCWE w'))]
         case _:
             return []
     rules.append(Rule('relatedTo',
-                      [OP(f's1 hasRelated{type_} r'), DP(f'r has{kind}ID id'), DP('s2 hasID id')],
-                      OP('s1 relatedTo s2')))
+                      [OPA(f's1 hasRelated{type_} r'), DPA(f'r has{kind}ID id'),
+                       DPA('s2 hasID id')],
+                      OPA('s1 relatedTo s2')))
     for relation in ['canAlsoBe', 'canFollow', 'canPrecede', 'childOf', 'peerOf', 'requires',
                      'startsWith']:
         rules.append(Rule(relation,
-                          [OP(f's1 hasRelated{type_} r'),
-                           OP('r hasNature indRelatedNatureEnumeration' f'{capitalize(relation)}'),
-                           DP(f'r has{kind}ID id'), DP('s2 hasID id')],
-                          OP('s1', relation, 's2')))
+                          [OPA(f's1 hasRelated{type_} r'),
+                           OPA('r hasNature indRelatedNatureEnumeration' f'{capitalize(relation)}'),
+                           DPA(f'r has{kind}ID id'), DPA('s2 hasID id')],
+                          OPA('s1', relation, 's2')))
     return rules
 
 
@@ -105,7 +110,8 @@ def fetch(path):
     return file
 
 
-if __name__ == '__main__':
+def main():
+    """Main mitre2owl logic"""
     parser = argparse.ArgumentParser(description='MITRE to OWL converter',
                                      prog='python -m mitre2owl')
     for kind in KINDS:
@@ -142,5 +148,8 @@ if __name__ == '__main__':
 
         with schema, data, open(f'{kind}.owx', 'w', encoding='utf8') as owx:
             patched = patch(Schema(schema), kind)
-            owx.write(Ontology(kind_lower, patched.enums, patched.parse(data),
-                               rules=get_rules(kind)).emit_owl())
+            owx.write(Ontology(kind_lower, patched.parse(data), rules=get_rules(kind)).emit_owl())
+
+
+if __name__ == '__main__':
+    main()

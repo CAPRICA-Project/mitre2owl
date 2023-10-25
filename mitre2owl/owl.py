@@ -91,7 +91,7 @@ class Literal:
         Parse a literal value
         :param value: The value
         """
-        return cls(value)
+        return cls(value) # this doesn’t look good, but have faith. pylint: disable=E1120
 
     def emit_owl(self):
         """Give the XML/OWL representation of the literal"""
@@ -139,8 +139,10 @@ class Individual:
     :param name: The individual name used as a base slug
     :param assertions: The assertions whose the individual is the subject
     :param type_: The XML type
+    :param annotations: The indidual annotations
+    :param ignore: Whether to ignore OWL translation
     """
-    def __init__(self, name, /, assertions=None, type_=None, ignore=False):
+    def __init__(self, name, /, *, assertions=None, type_=None, annotations=None, ignore=False):
         names = {attribute: None for attribute in NAME_ATTRIBUTES}
         self.assertions = assertions or []
         self.id = None
@@ -154,6 +156,7 @@ class Individual:
         self.name = make_name([names[attribute] for attribute in NAME_ATTRIBUTES], name)
         self.type = type_
         self.slug_base = self.name
+        self.annotations = annotations or []
         self.ignore = ignore
 
     def slug(self):
@@ -176,7 +179,12 @@ class Individual:
         <AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#label"/>
         <IRI>#{slug}</IRI>
         <Literal>{escape(self.name)}</Literal>
-    </AnnotationAssertion>'''
+    </AnnotationAssertion>{''.join(f"""
+    <AnnotationAssertion>
+        <AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#comment"/>
+        <IRI>#{slug}</IRI>
+        <Literal>{escape(annotation)}</Literal>
+    </AnnotationAssertion>""" for annotation in self.annotations)}'''
         if self.type is not None:
             owl += f'''
     <ClassAssertion>
@@ -186,6 +194,30 @@ class Individual:
         for assertion in self.assertions:
             owl += assertion.emit_owl(slug)
         return owl
+
+
+class Class:
+    """
+    This class represents an OWL class
+    :param type_: The XML type
+    :param annotations: The indidual annotations
+    """
+    def __init__(self, type_, /, *, annotations=None):
+        self.type = type_
+        self.annotations = annotations or []
+
+    def emit_owl(self):
+        """Give the XML/OWL representation of the class"""
+        slug = slugify(self.type)
+        return f'''
+    <Declaration>
+        <Class IRI="#{slug}"/>
+    </Declaration>{''.join(f"""
+    <AnnotationAssertion>
+        <AnnotationProperty IRI="http://www.w3.org/2000/01/rdf-schema#comment"/>
+        <IRI>#{slug}</IRI>
+        <Literal>{escape(annotation)}</Literal>
+    </AnnotationAssertion>""" for annotation in self.annotations)}'''
 
 
 class Property:
@@ -205,7 +237,7 @@ class Property:
         self.object = object_ if '#' in object_ else f'#{object_}'
 
 
-class Class:
+class ClassAtom:
     """
     This class represents an OWL class atom
     :param subject: The RDF subject
@@ -224,8 +256,8 @@ class Class:
             </ClassAtom>'''
 
 
-class ObjectProperty(Property):
-    """This class represents an OWL object property"""
+class ObjectPropertyAtom(Property):
+    """This class represents an OWL object property atom"""
     def emit_owl(self):
         """Give the XML/OWL representation of the object property"""
         return f'''
@@ -236,8 +268,8 @@ class ObjectProperty(Property):
             </ObjectPropertyAtom>'''
 
 
-class DataProperty(Property):
-    """This class represents an OWL data property"""
+class DataPropertyAtom(Property):
+    """This class represents an OWL data property atom"""
     def emit_owl(self):
         """Give the XML/OWL representation of the data property"""
         return f'''
@@ -282,13 +314,11 @@ class Rule:
 class Ontology:
     """
     This class represents an OWL ontology
-    :param prelude: The ontology prelude
     :param entries: The ontology entries (explored recursively)
     :param rules: The ontology rules
     """
-    def __init__(self, kind, prelude, entries, rules=None):
+    def __init__(self, kind, entries, rules=None):
         self.kind = kind
-        self.prelude = prelude
         self.entries = entries if isinstance(entries, list) else [entries]
         self.rules = rules or []
 
@@ -308,7 +338,6 @@ class Ontology:
     <Prefix name="xml" IRI="http://www.w3.org/XML/1998/namespace"/>
     <Prefix name="xsd" IRI="http://www.w3.org/2001/XMLSchema#"/>
     <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
-    {''.join(entry.emit_owl() for entry in self.prelude)}
-    {''.join(entry.value.emit_owl() for entry in self.entries)}
+    {''.join(entry.emit_owl() for entry in self.entries)}
     {''.join(rule.emit_owl() for rule in self.rules)}
 </Ontology>'''

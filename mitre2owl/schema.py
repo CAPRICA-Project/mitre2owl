@@ -1,10 +1,10 @@
-"""This module provides tools to parse MITRE XML files"""
+"*, annotations=None):""This module provides tools to parse MITRE XML files"""
 
 from datetime import datetime
 from lxml import etree, builder
 
 from .xpathutil import Name, Namespace, xpath
-from .owl import Has, Literal, Individual
+from .owl import Class, Has, Literal, Individual
 
 
 class EmptyLiteralException(Exception):
@@ -41,7 +41,14 @@ def get_string(value):
     return value.text.strip()
 
 
-class String(Literal):
+class Skip:
+    """This class skips prelude initialization"""
+    @staticmethod
+    def init_prelude():
+        """Skip the prelude initialization"""
+
+
+class String(Literal, Skip):
     """
     This class represents a string literal
     :param value: The string
@@ -56,7 +63,7 @@ class String(Literal):
         return self.value
 
 
-class Date(Literal):
+class Date(Literal, Skip):
     """
     This class represents a date literal
     :param value: The date
@@ -71,7 +78,7 @@ class Date(Literal):
         return datetime.strftime(self.value, "%Y-%m-%d")
 
 
-class Integer(Literal):
+class Integer(Literal, Skip):
     """
     This class represents an integer literal
     :param value: The integer
@@ -86,7 +93,7 @@ class Integer(Literal):
         return self.value
 
 
-class XMLDatePart(Literal):
+class XMLDatePart(Literal, Skip):
     """
     This class represents a date component (gMonth/gDay). Such XML types are pretty weird, so we
     convert them into integers.
@@ -115,8 +122,8 @@ def div(text):
     return builder.ElementMaker(namespace=XHTML.ns, nsmap=XHTML.prefixes())('div', text)
 
 
-def parse_annotation(node):
-    """Parse an annotation"""
+def parse_annotations(node):
+    """Parse the annotations of a node"""
     return xpath(node, (XS/'annotation') / (XS/'documentation') / 'text()')
 
 
@@ -156,7 +163,7 @@ class Element:
     :param ns: The namespace map
     """
     def __init__(self, node, schema, ns):
-        self.annotation = parse_annotation(node)
+        self.annotations = parse_annotations(node)
         self.name = node.get('name')
         self.min = node.get('minOccurs')
         self.max = node.get('maxOccurs')
@@ -164,7 +171,7 @@ class Element:
         if self.type is None: # if the `type' attribute is not set, explore the children
             complex_types = xpath(node, XS/COMPLEX_TYPE)
             if complex_types:
-                self.type = ComplexType(complex_types[0], schema, ns)
+                self.type = ComplexType(complex_types[0], schema, ns, annotations=self.annotations)
             else:
                 self.type = SimpleType(xpath(node, XS/SIMPLE_TYPE)[0], schema, ns)
         self.names = {add_namespace(self.name, ns[0]): self}
@@ -188,8 +195,16 @@ class Element:
             return assertions
         return Has(name, parsed)
 
+    def push_annotations(self, annotations):
+        """
+        Push annotations to the element type
+        :param annotations: The annotations to push
+        """
+        if not isinstance(self.type, str): # TODO: push such annotations to relations
+            self.type.push_annotations(annotations)
 
-class SimpleType:
+
+class SimpleType(Skip):
     """
     [I] xs:simpleType parser
     :param node: The xs:simpleType to parse
@@ -199,10 +214,11 @@ class SimpleType:
     """
     def __init__(self, node, schema, ns, name=None):
         self.name = node.get('name') or name
-        self.annotation = parse_annotation(node)
+        self.annotations = parse_annotations(node)
         # For convenience, we ignore lists and unions
         self.restriction = Restriction(xpath(node, XS/RESTRICTION)[0], schema, ns, self.name)
         self.alone = False # look away
+        self.marked = False
 
     def parse(self, node, schema):
         """
@@ -210,6 +226,9 @@ class SimpleType:
         :param node: The node to parse
         :param schema: The parsed schema
         """
+        if self.name is not None and not self.marked:
+            schema.prelude.append(Class(self.name, annotations = self.annotations))
+            self.marked = True
         return self.restriction.parse(node, schema)
 
 
@@ -227,15 +246,14 @@ class Restriction:
         self.name = name
         for child in xpath(node, XS/ENUMERATION):
             # For convenience, we ignore non-enumeration restrictions
-            item = Enumeration(child, schema, ns)
+            item = Enumeration(child)
             self.enumerations[item.value] = item
-            schema.enums.append(Individual(item.value, type_=name))
+            schema.prelude.append(item.get(name, ignore=False))
 
-    def parse(self, node, schema):
+    def parse(self, node, _):
         """
         Restriction parser
         :param node: The node to parse
-        :param schema: The parsed schema
         """
         return self.enumerations[get_string(node)].get(self.name)
 
@@ -244,18 +262,18 @@ class Enumeration:
     """
     [I] xs:enumeration parser
     :param node: The xs:restriction to parse
-    :param schema: The schema
     """
-    def __init__(self, node, schema, _):
+    def __init__(self, node):
         self.value = node.get('value')
-        self.annotation = parse_annotation(node)
+        self.annotations = parse_annotations(node)
 
-    def get(self, name):
+    def get(self, name, ignore=True):
         """
         Enumeration parser
         :param name: The enumeration name
+        :param ignore: Whether to ignore OWL translation
         """
-        return Individual(self.value, type_=name, ignore=True)
+        return Individual(self.value, type_=name, annotations=self.annotations, ignore=ignore)
 
 
 class ComplexType:
@@ -264,11 +282,13 @@ class ComplexType:
     :param node: The xs:complexType to parse
     :param schema: The schema
     :param ns: The namespace map
+    :param name: The parent element name
+    :param annotations: The parent element annotations
     """
-    def __init__(self, node, schema, ns):
+    def __init__(self, node, schema, ns, *, annotations=None):
         # Here we are VERY lenient with the standard, to simplify parsing
         self.name = node.get('name')
-        self.annotation = parse_annotation(node)
+        self.annotations = (annotations or []) + parse_annotations(node)
         self.attributes = [Attribute(n, schema, ns) for n in xpath(node, XS/ATTRIBUTE)]
         self.type = None
         if sequences := xpath(node, XS/SEQUENCE):
@@ -281,6 +301,8 @@ class ComplexType:
             self.alone = len(self.attributes) == 1
         else:
             self.alone = self.type.alone and len(self.attributes) <= 1
+        self.force_pushed_annotations_to_relations = False
+        self.marked = False
 
     def parse(self, node, schema):
         """
@@ -288,6 +310,11 @@ class ComplexType:
         :param node: The node to parse
         :param schema: The parsed schema
         """
+        type_ = schema.get_name(node)
+        if not self.marked:
+            if not self.alone:
+                schema.prelude.append(Class(type_, annotations = self.annotations))
+            self.marked = True
         assertions = []
         node_attrs = node.attrib
         for attribute in self.attributes:
@@ -296,8 +323,24 @@ class ComplexType:
                 assertions.append(attribute.parse(node_attrs[name], schema))
         if self.type is not None:
             assertions += self.type.parse(node, schema)
-        type_ = schema.get_name(node)
         return Individual(f'{type_}_{node.sourceline}', assertions=assertions, type_=type_)
+
+    def init_prelude(self):
+        """Initialize the prelude by properly pushing annotations"""
+        if self.alone:
+            if self.annotations and not self.force_pushed_annotations_to_relations: # TODO
+                if self.type is None:
+                    self.attributes[0].push_annotations(self.annotations)
+                else:
+                    self.type.push_annotations(self.annotations)
+
+    def push_annotations(self, annotations):
+        """
+        Push annotations to the current type
+        :param annotations: The annotations to push
+        """
+        assert not self.marked
+        self.annotations += annotations
 
 
 class Attribute:
@@ -321,6 +364,14 @@ class Attribute:
         :param schema: The parsed schema
         """
         return Has(self.name, schema.resolve(self.type).parse(value, schema))
+
+    def push_annotations(self, annotations):
+        """
+        Push annotations to the attribute type
+        :param annotations: The annotations to push
+        """
+        if not isinstance(self.type, str): # TODO: push such annotations to relations
+            self.type.push_annotations(annotations)
 
 
 class Sequence:
@@ -368,6 +419,14 @@ class Sequence:
                             for child in node.xpath('*')))
             assertions.append(self.any.parse(div(text), schema))
         return assertions
+
+    def push_annotations(self, annotations):
+        """
+        Push annotations to the sequence type
+        :param annotations: The annotations to push
+        """
+        if self.any is None:
+            self.children[0].push_annotations(annotations)
 
 
 class Extension:
@@ -472,11 +531,11 @@ class Schema:
     """
     def __init__(self, file, raw=None):
         self.elements = {}
-        self.types = DEFAULT_TYPES
+        self.types = {**DEFAULT_TYPES}
         schema = etree.parse(file).xpath('.')[0]
         self.nsmap = schema.nsmap
         self.namespace = schema.get('targetNamespace')
-        self.enums = []
+        self.prelude = []
         for node in xpath(schema, XS/(ELEMENT|COMPLEX_TYPE|SIMPLE_TYPE)):
             if XS/ELEMENT == node.tag:
                 element = Element(node, self, ns=(self.namespace, self.nsmap))
@@ -490,6 +549,8 @@ class Schema:
                 self.types[f'{{{self.namespace}}}{type_.name}'] = type_
         self.raw_datatypes = raw or [XHTML]
         self.name_overrides = {}
+        for type_ in self.types.values():
+            type_.init_prelude()
 
     def parse(self, file):
         """
@@ -497,7 +558,12 @@ class Schema:
         :param file: The XML file to parse
         """
         node = etree.parse(file).xpath('.')[0]
-        return self.elements[node.tag].parse(node, schema=self)
+        parsed = self.elements[node.tag].parse(node, schema=self)
+        if isinstance(parsed, list):
+            values = [assertion.value for assertion in parsed]
+        else:
+            values = [parsed.value]
+        return self.prelude + values
 
     def resolve(self, type_):
         """
